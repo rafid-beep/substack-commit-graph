@@ -22,12 +22,12 @@ That's it. Every page load pulls the latest posts from your feeds.
 
 ## How it works
 
-The browser fetches each Substack's RSS feed via [rss2json.com](https://rss2json.com/) (free public proxy that adds CORS headers), then renders the heatmap from the data.
+The browser calls Substack's `/api/v1/archive` endpoint (paginated, full history) via [allorigins.win](https://allorigins.win/) — a free public CORS proxy. Results are cached in your browser's `localStorage` for 6 hours so reloads are instant.
 
 - **Own posts** (anything from `own_publications`) show green
-- **Guest posts** (anything from `guest_publications` where the `<author>` matches your `byline`) show purple
+- **Guest posts** (anything from `guest_publications` where you appear in `publishedBylines` matching your `byline`) show purple
 
-Substack RSS exposes roughly the 20 most recent posts per publication, so the heatmap reflects recent activity — not your full archive.
+Full archive — not just the most recent 20.
 
 ## Run locally
 

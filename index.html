@@ -117,7 +117,9 @@
   </div>
 
 <script>
-const RSS_PROXY = "https://api.rss2json.com/v1/api.json?rss_url=";
+const CORS_PROXY = "https://api.allorigins.win/get?url=";
+const ARCHIVE_PAGE_SIZE = 50;
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CELL = 11;
 const GAP = 3;
 const STEP = CELL + GAP;
@@ -126,11 +128,27 @@ const TOP_PAD = 18;
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const DOWS = ["", "Mon", "", "Wed", "", "Fri", ""];
 
-function feedUrl(pub) {
-  return pub.replace(/\/+$/, "") + "/feed";
+function archiveUrl(pub, offset, limit) {
+  return `${pub.replace(/\/+$/, "")}/api/v1/archive?sort=new&offset=${offset}&limit=${limit}`;
 }
 function hostOf(pub) {
   try { return new URL(pub).host.toLowerCase(); } catch { return pub; }
+}
+function cacheKey(pub) { return `scg:archive:${hostOf(pub)}`; }
+
+function loadCache(pub) {
+  try {
+    const raw = localStorage.getItem(cacheKey(pub));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj.fetchedAt || Date.now() - obj.fetchedAt > CACHE_TTL_MS) return null;
+    return obj.items;
+  } catch { return null; }
+}
+function saveCache(pub, items) {
+  try {
+    localStorage.setItem(cacheKey(pub), JSON.stringify({ fetchedAt: Date.now(), items }));
+  } catch {}
 }
 function pad2(n) { return String(n).padStart(2, "0"); }
 function ymdFromDate(d) {
@@ -146,52 +164,74 @@ function startOfWeekSun(d) {
   return x;
 }
 
-async function fetchFeed(pub) {
-  const url = RSS_PROXY + encodeURIComponent(feedUrl(pub));
+async function fetchViaProxy(targetUrl) {
+  const url = CORS_PROXY + encodeURIComponent(targetUrl);
   const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`proxy returned ${r.status} for ${pub}`);
-  const data = await r.json();
-  if (data.status !== "ok") throw new Error(`proxy error for ${pub}: ${data.message || data.status}`);
-  return data.items || [];
+  if (!r.ok) throw new Error(`proxy ${r.status}`);
+  const wrap = await r.json();
+  const code = wrap.status && wrap.status.http_code;
+  if (code && code !== 200) throw new Error(`upstream ${code}`);
+  return JSON.parse(wrap.contents);
+}
+
+async function fetchArchive(pub) {
+  const cached = loadCache(pub);
+  if (cached) return cached;
+  const all = [];
+  let offset = 0;
+  while (true) {
+    const batch = await fetchViaProxy(archiveUrl(pub, offset, ARCHIVE_PAGE_SIZE));
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < ARCHIVE_PAGE_SIZE) break;
+    offset += ARCHIVE_PAGE_SIZE;
+    if (offset > 5000) break;
+  }
+  saveCache(pub, all);
+  return all;
+}
+
+function bylinesOf(item) {
+  return (item.publishedBylines || []).map(b => (b.name || "").trim()).filter(Boolean);
 }
 
 function itemToPost(item, pub, kind) {
-  const d = new Date(item.pubDate);
+  const d = new Date(item.post_date);
   if (isNaN(d.getTime())) return null;
   return {
     date: ymdFromDate(d),
     title: (item.title || "").trim(),
-    url: item.link || "",
+    url: item.canonical_url || "",
     publication: hostOf(pub),
     kind,
-    author: (item.author || "").trim(),
+    authors: bylinesOf(item),
   };
 }
 
 async function loadPosts(config) {
-  const byline = (config.byline || "").trim();
+  const byline = (config.byline || "").trim().toLowerCase();
   const own = config.own_publications || [];
   const guest = config.guest_publications || [];
 
   const ownPosts = (await Promise.all(own.map(async pub => {
     try {
-      const items = await fetchFeed(pub);
+      const items = await fetchArchive(pub);
       return items.map(i => itemToPost(i, pub, "own")).filter(Boolean);
     } catch (e) {
-      console.warn(e);
+      console.warn("own fetch failed:", pub, e);
       return [];
     }
   }))).flat();
 
   const guestPosts = (await Promise.all(guest.map(async pub => {
     try {
-      const items = await fetchFeed(pub);
+      const items = await fetchArchive(pub);
       return items
         .map(i => itemToPost(i, pub, "guest"))
         .filter(Boolean)
-        .filter(p => byline && p.author && p.author.toLowerCase() === byline.toLowerCase());
+        .filter(p => byline && p.authors.some(a => a.toLowerCase() === byline));
     } catch (e) {
-      console.warn(e);
+      console.warn("guest fetch failed:", pub, e);
       return [];
     }
   }))).flat();
@@ -205,7 +245,7 @@ async function loadPosts(config) {
     seen.add(key);
     deduped.push(p);
   }
-  return { byline, posts: deduped };
+  return { byline: config.byline || "", posts: deduped };
 }
 
 function buildGrid(posts, endDate) {
