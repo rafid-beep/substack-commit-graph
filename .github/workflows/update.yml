@@ -42,7 +42,11 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add data.json
             git commit -m "chore: refresh writing activity"
-            git push
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "push attempt $i failed, retrying..."
+              sleep $((i * 3))
+            done
           else
             echo "No changes."
           fi

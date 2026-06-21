@@ -31,8 +31,11 @@ def entry_authors(entry) -> list:
     return names
 
 
+USER_AGENT = "Mozilla/5.0 (compatible; substack-commit-graph/0.1; +https://github.com/rafid-beep/substack-commit-graph)"
+
+
 def collect(pub_url: str, kind: str, byline: Optional[str]) -> list:
-    parsed = feedparser.parse(feed_url(pub_url))
+    parsed = feedparser.parse(feed_url(pub_url), agent=USER_AGENT)
     posts = []
     for e in parsed.entries:
         published = e.get("published_parsed") or e.get("updated_parsed")
