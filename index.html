@@ -85,6 +85,7 @@
   .badge.guest { background: var(--guest-2); color: #fff; }
   rect.cell { stroke: rgba(27,31,35,0.06); stroke-width: 1px; }
   .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  .error { color: #cf222e; }
 </style>
 </head>
 <body>
@@ -116,6 +117,7 @@
   </div>
 
 <script>
+const RSS_PROXY = "https://api.rss2json.com/v1/api.json?rss_url=";
 const CELL = 11;
 const GAP = 3;
 const STEP = CELL + GAP;
@@ -124,17 +126,86 @@ const TOP_PAD = 18;
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const DOWS = ["", "Mon", "", "Wed", "", "Fri", ""];
 
+function feedUrl(pub) {
+  return pub.replace(/\/+$/, "") + "/feed";
+}
+function hostOf(pub) {
+  try { return new URL(pub).host.toLowerCase(); } catch { return pub; }
+}
+function pad2(n) { return String(n).padStart(2, "0"); }
+function ymdFromDate(d) {
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
 function parseDate(s) {
   const [y, m, d] = s.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d));
-}
-function ymd(d) {
-  return d.toISOString().slice(0, 10);
 }
 function startOfWeekSun(d) {
   const x = new Date(d);
   x.setUTCDate(x.getUTCDate() - x.getUTCDay());
   return x;
+}
+
+async function fetchFeed(pub) {
+  const url = RSS_PROXY + encodeURIComponent(feedUrl(pub));
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`proxy returned ${r.status} for ${pub}`);
+  const data = await r.json();
+  if (data.status !== "ok") throw new Error(`proxy error for ${pub}: ${data.message || data.status}`);
+  return data.items || [];
+}
+
+function itemToPost(item, pub, kind) {
+  const d = new Date(item.pubDate);
+  if (isNaN(d.getTime())) return null;
+  return {
+    date: ymdFromDate(d),
+    title: (item.title || "").trim(),
+    url: item.link || "",
+    publication: hostOf(pub),
+    kind,
+    author: (item.author || "").trim(),
+  };
+}
+
+async function loadPosts(config) {
+  const byline = (config.byline || "").trim();
+  const own = config.own_publications || [];
+  const guest = config.guest_publications || [];
+
+  const ownPosts = (await Promise.all(own.map(async pub => {
+    try {
+      const items = await fetchFeed(pub);
+      return items.map(i => itemToPost(i, pub, "own")).filter(Boolean);
+    } catch (e) {
+      console.warn(e);
+      return [];
+    }
+  }))).flat();
+
+  const guestPosts = (await Promise.all(guest.map(async pub => {
+    try {
+      const items = await fetchFeed(pub);
+      return items
+        .map(i => itemToPost(i, pub, "guest"))
+        .filter(Boolean)
+        .filter(p => byline && p.author && p.author.toLowerCase() === byline.toLowerCase());
+    } catch (e) {
+      console.warn(e);
+      return [];
+    }
+  }))).flat();
+
+  const all = [...ownPosts, ...guestPosts];
+  const seen = new Set();
+  const deduped = [];
+  for (const p of all.sort((a, b) => b.date.localeCompare(a.date))) {
+    const key = p.url || `${p.date}|${p.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(p);
+  }
+  return { byline, posts: deduped };
 }
 
 function buildGrid(posts, endDate) {
@@ -144,22 +215,21 @@ function buildGrid(posts, endDate) {
   start.setUTCDate(start.getUTCDate() - 7 * 52);
   const byDate = new Map();
   for (const p of posts) {
-    const d = p.date;
-    if (!byDate.has(d)) byDate.set(d, []);
-    byDate.get(d).push(p);
+    if (!byDate.has(p.date)) byDate.set(p.date, []);
+    byDate.get(p.date).push(p);
   }
   const weeks = [];
   let cursor = new Date(start);
   while (cursor <= end) {
     const week = [];
     for (let i = 0; i < 7; i++) {
-      const key = ymd(cursor);
+      const key = ymdFromDate(cursor);
       week.push({ date: key, posts: byDate.get(key) || [] });
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     weeks.push(week);
   }
-  return { weeks, start, end };
+  return weeks;
 }
 
 function colorFor(dayPosts) {
@@ -180,13 +250,13 @@ function render(data) {
     document.getElementById("subtitle").textContent = "No posts yet.";
     document.getElementById("summary").textContent = "";
     document.getElementById("posts").innerHTML =
-      '<li class="empty">No posts found. Check config.yml and rerun fetch.py.</li>';
+      '<li class="empty">No posts found. Check config.json.</li>';
     return;
   }
 
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
-  const { weeks } = buildGrid(posts, today);
+  const weeks = buildGrid(posts, today);
 
   const ownCount = posts.filter(p => p.kind === "own").length;
   const guestCount = posts.filter(p => p.kind === "guest").length;
@@ -276,14 +346,17 @@ function render(data) {
   });
 }
 
-fetch("data.json", { cache: "no-store" })
-  .then(r => r.json())
-  .then(render)
-  .catch(err => {
-    document.getElementById("subtitle").textContent =
-      "Could not load data.json. Run `python3 fetch.py` first.";
+(async () => {
+  try {
+    const cfg = await fetch("config.json", { cache: "no-store" }).then(r => r.json());
+    const data = await loadPosts(cfg);
+    render(data);
+  } catch (err) {
     console.error(err);
-  });
+    document.getElementById("subtitle").innerHTML =
+      `<span class="error">Could not load. ${String(err).replace(/</g, "&lt;")}</span>`;
+  }
+})();
 </script>
 </body>
 </html>
