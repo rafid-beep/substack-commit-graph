@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -31,11 +32,35 @@ def entry_authors(entry) -> list:
     return names
 
 
-USER_AGENT = "Mozilla/5.0 (compatible; substack-commit-graph/0.1; +https://github.com/rafid-beep/substack-commit-graph)"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def fetch_bytes(url: str) -> bytes:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
 
 
 def collect(pub_url: str, kind: str, byline: Optional[str]) -> list:
-    parsed = feedparser.parse(feed_url(pub_url), agent=USER_AGENT)
+    url = feed_url(pub_url)
+    try:
+        raw = fetch_bytes(url)
+    except Exception as e:
+        print(f"  ! fetch failed for {url}: {e}", file=sys.stderr)
+        return []
+    parsed = feedparser.parse(raw)
+    print(f"  {url}: {len(parsed.entries)} entries")
     posts = []
     for e in parsed.entries:
         published = e.get("published_parsed") or e.get("updated_parsed")
