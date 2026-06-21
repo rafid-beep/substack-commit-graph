@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Writing activity</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --cell-empty: #ebedf0;
+    --own-1: #9be9a8;
+    --own-2: #40c463;
+    --own-3: #30a14e;
+    --own-4: #216e39;
+    --guest-1: #d8b4fe;
+    --guest-2: #a855f7;
+    --guest-3: #7e22ce;
+    --guest-4: #581c87;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --border: #30363d;
+      --cell-empty: #161b22;
+    }
+  }
+  html, body { background: var(--bg); color: var(--fg); margin: 0; }
+  body {
+    font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 32px 24px;
+    max-width: 980px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); margin-bottom: 24px; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .summary { color: var(--muted); margin-bottom: 16px; font-size: 13px; }
+  .summary strong { color: var(--fg); font-weight: 600; }
+  .graph-wrap { overflow-x: auto; }
+  svg { display: block; }
+  .month-label { fill: var(--muted); font-size: 10px; }
+  .dow-label { fill: var(--muted); font-size: 9px; }
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .legend-row { display: flex; align-items: center; gap: 4px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .post-list { list-style: none; padding: 0; margin: 0; }
+  .post-list li {
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .post-list li:first-child { border-top: none; }
+  .post-date { color: var(--muted); font-size: 12px; min-width: 84px; font-variant-numeric: tabular-nums; }
+  .post-title { color: var(--fg); text-decoration: none; flex: 1; }
+  .post-title:hover { text-decoration: underline; }
+  .badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .badge.own { background: var(--own-2); color: #fff; }
+  .badge.guest { background: var(--guest-2); color: #fff; }
+  rect.cell { stroke: rgba(27,31,35,0.06); stroke-width: 1px; }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+</style>
+</head>
+<body>
+  <h1 id="title">Writing activity</h1>
+  <div class="sub" id="subtitle">Loading…</div>
+
+  <div class="card">
+    <div class="summary" id="summary"></div>
+    <div class="graph-wrap"><svg id="graph"></svg></div>
+    <div class="legend">
+      <span>Less</span>
+      <span class="legend-row">
+        <span class="legend-swatch" style="background: var(--cell-empty)"></span>
+        <span class="legend-swatch" style="background: var(--own-1)"></span>
+        <span class="legend-swatch" style="background: var(--own-2)"></span>
+        <span class="legend-swatch" style="background: var(--own-3)"></span>
+        <span class="legend-swatch" style="background: var(--own-4)"></span>
+      </span>
+      <span>More</span>
+      <span style="flex: 1"></span>
+      <span class="legend-row"><span class="legend-swatch" style="background: var(--own-2)"></span> Own publication</span>
+      <span class="legend-row"><span class="legend-swatch" style="background: var(--guest-2)"></span> Guest post</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="summary"><strong>Recent posts</strong></div>
+    <ul class="post-list" id="posts"></ul>
+  </div>
+
+<script>
+const CELL = 11;
+const GAP = 3;
+const STEP = CELL + GAP;
+const LEFT_PAD = 24;
+const TOP_PAD = 18;
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DOWS = ["", "Mon", "", "Wed", "", "Fri", ""];
+
+function parseDate(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+function ymd(d) {
+  return d.toISOString().slice(0, 10);
+}
+function startOfWeekSun(d) {
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate() - x.getUTCDay());
+  return x;
+}
+
+function buildGrid(posts, endDate) {
+  const end = startOfWeekSun(endDate);
+  end.setUTCDate(end.getUTCDate() + 6);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 7 * 52);
+  const byDate = new Map();
+  for (const p of posts) {
+    const d = p.date;
+    if (!byDate.has(d)) byDate.set(d, []);
+    byDate.get(d).push(p);
+  }
+  const weeks = [];
+  let cursor = new Date(start);
+  while (cursor <= end) {
+    const week = [];
+    for (let i = 0; i < 7; i++) {
+      const key = ymd(cursor);
+      week.push({ date: key, posts: byDate.get(key) || [] });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    weeks.push(week);
+  }
+  return { weeks, start, end };
+}
+
+function colorFor(dayPosts) {
+  if (!dayPosts.length) return "var(--cell-empty)";
+  const hasGuest = dayPosts.some(p => p.kind === "guest");
+  const intensity = Math.min(4, dayPosts.length);
+  const prefix = hasGuest ? "guest" : "own";
+  return `var(--${prefix}-${intensity})`;
+}
+
+function render(data) {
+  const posts = data.posts || [];
+  document.getElementById("title").textContent = data.byline
+    ? `${data.byline} — writing activity`
+    : "Writing activity";
+
+  if (!posts.length) {
+    document.getElementById("subtitle").textContent = "No posts yet.";
+    document.getElementById("summary").textContent = "";
+    document.getElementById("posts").innerHTML =
+      '<li class="empty">No posts found. Check config.yml and rerun fetch.py.</li>';
+    return;
+  }
+
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const { weeks } = buildGrid(posts, today);
+
+  const ownCount = posts.filter(p => p.kind === "own").length;
+  const guestCount = posts.filter(p => p.kind === "guest").length;
+  const yearAgo = new Date(today);
+  yearAgo.setUTCDate(yearAgo.getUTCDate() - 365);
+  const yearPosts = posts.filter(p => parseDate(p.date) >= yearAgo);
+
+  document.getElementById("subtitle").textContent =
+    `${posts.length} post${posts.length === 1 ? "" : "s"} tracked`;
+  document.getElementById("summary").innerHTML =
+    `<strong>${yearPosts.length}</strong> post${yearPosts.length === 1 ? "" : "s"} in the last year &middot; ` +
+    `<strong>${ownCount}</strong> own &middot; <strong>${guestCount}</strong> guest`;
+
+  const width = LEFT_PAD + weeks.length * STEP;
+  const height = TOP_PAD + 7 * STEP;
+  const svg = document.getElementById("graph");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+
+  const NS = "http://www.w3.org/2000/svg";
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  let lastMonth = -1;
+  weeks.forEach((week, wi) => {
+    const firstDay = parseDate(week[0].date);
+    const m = firstDay.getUTCMonth();
+    if (m !== lastMonth && firstDay.getUTCDate() <= 7) {
+      const label = document.createElementNS(NS, "text");
+      label.setAttribute("x", LEFT_PAD + wi * STEP);
+      label.setAttribute("y", 10);
+      label.setAttribute("class", "month-label");
+      label.textContent = MONTHS[m];
+      svg.appendChild(label);
+      lastMonth = m;
+    }
+  });
+
+  DOWS.forEach((d, i) => {
+    if (!d) return;
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", 0);
+    t.setAttribute("y", TOP_PAD + i * STEP + CELL - 1);
+    t.setAttribute("class", "dow-label");
+    t.textContent = d;
+    svg.appendChild(t);
+  });
+
+  weeks.forEach((week, wi) => {
+    week.forEach((day, di) => {
+      const rect = document.createElementNS(NS, "rect");
+      rect.setAttribute("class", "cell");
+      rect.setAttribute("x", LEFT_PAD + wi * STEP);
+      rect.setAttribute("y", TOP_PAD + di * STEP);
+      rect.setAttribute("width", CELL);
+      rect.setAttribute("height", CELL);
+      rect.setAttribute("rx", 2);
+      rect.setAttribute("fill", colorFor(day.posts));
+      const tooltip = day.posts.length
+        ? `${day.date}\n` + day.posts.map(p => `${p.kind === "guest" ? "[guest] " : ""}${p.title}`).join("\n")
+        : `${day.date} — no posts`;
+      const title = document.createElementNS(NS, "title");
+      title.textContent = tooltip;
+      rect.appendChild(title);
+      svg.appendChild(rect);
+    });
+  });
+
+  const list = document.getElementById("posts");
+  list.innerHTML = "";
+  posts.slice(0, 25).forEach(p => {
+    const li = document.createElement("li");
+    const dateEl = document.createElement("span");
+    dateEl.className = "post-date";
+    dateEl.textContent = p.date;
+    const link = document.createElement("a");
+    link.className = "post-title";
+    link.href = p.url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = p.title;
+    const badge = document.createElement("span");
+    badge.className = `badge ${p.kind}`;
+    badge.textContent = p.kind;
+    li.append(dateEl, link, badge);
+    list.appendChild(li);
+  });
+}
+
+fetch("data.json", { cache: "no-store" })
+  .then(r => r.json())
+  .then(render)
+  .catch(err => {
+    document.getElementById("subtitle").textContent =
+      "Could not load data.json. Run `python3 fetch.py` first.";
+    console.error(err);
+  });
+</script>
+</body>
+</html>
